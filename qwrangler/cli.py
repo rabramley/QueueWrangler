@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import argparse
+import tomllib
 from collections.abc import Iterable
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import textual.widgets
+from platformdirs import PlatformDirs
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
@@ -13,8 +14,24 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 
-AUDIO_SUFFIXES = {".mp3", ".flac"}
-PLAYLIST_SUFFIXES = {".m3u", ".m3u8"}
+platform_dirs = PlatformDirs("redrum", "lbrc")
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "music_path": platform_dirs.user_music_dir,
+    "playlist_path": Path(platform_dirs.user_music_dir) / "playlists",
+    "audio_suffixes": {".mp3", ".flac"},
+    "playlist_suffixes": {".m3u", ".m3u8"},
+}
+
+
+def load_config() -> dict:
+    path = Path(platform_dirs.user_config_dir) / "config.toml"
+
+    if not path.is_file():
+        return DEFAULT_CONFIG.copy()
+
+    with path.open("rb") as file:
+        return DEFAULT_CONFIG | tomllib.load(file)
 
 
 class MediaTree(textual.widgets.DirectoryTree):
@@ -32,7 +49,7 @@ class MediaTree(textual.widgets.DirectoryTree):
             path
             for path in paths
             if path.is_dir()
-            or path.suffix.lower() in AUDIO_SUFFIXES | PLAYLIST_SUFFIXES
+            or path.suffix.lower() in config["audio_suffixes"] | config["playlist_suffixes"]
         ]
 
     def clear_playlist_status_cache(self) -> None:
@@ -75,7 +92,7 @@ class MediaTree(textual.widgets.DirectoryTree):
             path.resolve()
             for path in folder.rglob("*")
             if path.is_file()
-            and path.suffix.lower() in AUDIO_SUFFIXES
+            and path.suffix.lower() in config["audio_suffixes"]
         }
 
         if not audio_files:
@@ -121,7 +138,7 @@ class MediaTree(textual.widgets.DirectoryTree):
                 label.append(" ◐", style="bold yellow")
 
         elif (
-            path.suffix.lower() in AUDIO_SUFFIXES
+            path.suffix.lower() in config["audio_suffixes"]
             and self.app.track_is_in_playlist(path)
         ):
             label.append(" ✓", style="bold green")
@@ -170,7 +187,7 @@ class SavePlaylistScreen(ModalScreen[Path | None]):
             self.notify("Enter a playlist filename", severity="warning")
             return
         path = Path(raw).expanduser()
-        if path.suffix.lower() not in PLAYLIST_SUFFIXES:
+        if path.suffix.lower() not in config["playlist_suffixes"]:
             path = path.with_suffix(".m3u")
         self.dismiss(path)
 
@@ -180,7 +197,7 @@ class SavePlaylistScreen(ModalScreen[Path | None]):
 
 
 class PlaylistApp(App[None]):
-    TITLE = "M3U Playlist Builder"
+    TITLE = "Q Wrangler"
     CSS = """
         #main { height: 1fr; }
         #browser-panel { width: 1fr; border: round $primary; }
@@ -202,10 +219,11 @@ class PlaylistApp(App[None]):
         Binding("ctrl+n", "new_playlist", "New", show=True),
     ]
 
-    def __init__(self, library: Path) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.library = library.resolve()
-        self.playlist_path: Path | None = None
+        self.library: Path = Path(config["music_path"]).expanduser().resolve()
+        self.playlists_path: Path = Path(config["playlist_path"]).expanduser().resolve()
+        self.current_playlist_path: Path | None = None
         self.playlist_tracks: set[Path] = set()
 
     def track_is_in_playlist(self, path: Path) -> bool:
@@ -246,16 +264,16 @@ class PlaylistApp(App[None]):
         return [item.path for item in self.playlist.children if isinstance(item, TrackItem)]
 
     def update_status(self, message: str | None = None) -> None:
-        name = str(self.playlist_path) if self.playlist_path else "Unsaved playlist"
+        name = str(self.current_playlist_path) if self.current_playlist_path else "Unsaved playlist"
         detail = message or f"{len(self.tracks())} track(s)"
         self.query_one("#status", textual.widgets.Static).update(f"{name} | {detail}")
 
     @on(textual.widgets.DirectoryTree.FileSelected)
     def file_selected(self, event: textual.widgets.DirectoryTree.FileSelected) -> None:
         path = Path(event.path)
-        if path.suffix.lower() in AUDIO_SUFFIXES:
+        if path.suffix.lower() in config["audio_suffixes"]:
             self.add_track(path)
-        elif path.suffix.lower() in PLAYLIST_SUFFIXES:
+        elif path.suffix.lower() in config["playlist_suffixes"]:
             self.load_playlist(path)
 
     def action_activate(self) -> None:
@@ -265,9 +283,9 @@ class PlaylistApp(App[None]):
             if node is not None and node.data is not None:
                 path = Path(node.data.path)
                 if path.is_file():
-                    if path.suffix.lower() in AUDIO_SUFFIXES:
+                    if path.suffix.lower() in config["audio_suffixes"]:
                         self.add_track(path)
-                    elif path.suffix.lower() in PLAYLIST_SUFFIXES:
+                    elif path.suffix.lower() in config["playlist_suffixes"]:
                         self.load_playlist(path)
         elif isinstance(focused, textual.widgets.ListView) and focused.highlighted_child is not None:
             self.notify(str(focused.highlighted_child.path))
@@ -302,7 +320,7 @@ class PlaylistApp(App[None]):
 
         selected_path = Path(node.data.path)
 
-        if not selected_path.is_dir() and selected_path.suffix.lower() in AUDIO_SUFFIXES:
+        if not selected_path.is_dir() and selected_path.suffix.lower() in config["audio_suffixes"]:
             self.add_track(selected_path)
             return
 
@@ -313,7 +331,7 @@ class PlaylistApp(App[None]):
                 path.resolve()
                 for path in selected_path.rglob("*")
                 if path.is_file()
-                and path.suffix.lower() in AUDIO_SUFFIXES
+                and path.suffix.lower() in config["audio_suffixes"]
             ),
             key=lambda path: path.as_posix().casefold(),
         )
@@ -325,10 +343,7 @@ class PlaylistApp(App[None]):
         ]
 
         if not new_tracks:
-            self.notify(
-                "No new MP3 or FLAC files found",
-                severity="warning",
-            )
+            self.notify("No new files found", severity="warning")
             return
 
         self.playlist.extend(
@@ -373,7 +388,7 @@ class PlaylistApp(App[None]):
                 path.resolve()
                 for path in selected_path.rglob("*")
                 if path.is_file()
-                and path.suffix.lower() in AUDIO_SUFFIXES
+                and path.suffix.lower() in config["audio_suffixes"]
             }
 
             self._remove_playlist_tracks(discovered_tracks)
@@ -462,13 +477,13 @@ class PlaylistApp(App[None]):
             if not candidate.is_absolute():
                 candidate = path.parent / candidate
             candidate = candidate.resolve()
-            if candidate.suffix.lower() in AUDIO_SUFFIXES and candidate.is_file():
+            if candidate.suffix.lower() in config["audio_suffixes"] and candidate.is_file():
                 tracks.append(candidate)
             else:
                 missing += 1
         self.playlist.clear()
         self.playlist.extend(TrackItem(track) for track in tracks)
-        self.playlist_path = path.resolve()
+        self.current_playlist_path = path.resolve()
         suffix = f"; skipped {missing} missing/unsupported" if missing else ""
 
         self.playlist_tracks = set(tracks)
@@ -478,14 +493,14 @@ class PlaylistApp(App[None]):
 
     def action_new_playlist(self) -> None:
         self.playlist.clear()
-        self.playlist_path = None
+        self.current_playlist_path = None
         self.playlist_tracks.clear()
 
         self.refresh_track_icons()
         self.update_status("New playlist")
 
     def action_save_playlist(self) -> None:
-        initial = self.playlist_path or (self.library / "playlist.m3u")
+        initial = self.current_playlist_path or (self.library / "playlist.m3u")
         self.push_screen(SavePlaylistScreen(initial), self._save_to)
 
     def _save_to(self, path: Path | None) -> None:
@@ -505,20 +520,16 @@ class PlaylistApp(App[None]):
         except OSError as exc:
             self.notify(f"Cannot save playlist: {exc}", severity="error")
             return
-        self.playlist_path = path
+        self.current_playlist_path = path
         self.update_status(f"Saved {len(self.tracks())} track(s)")
         self.notify(f"Saved {path.name}")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Browse MP3/FLAC files and build M3U playlists.")
-    parser.add_argument("library", nargs="?", type=Path, default=Path.cwd(), help="music library root")
-    args = parser.parse_args()
-    library = args.library.expanduser()
-    if not library.is_dir():
-        parser.error(f"not a directory: {library}")
-    PlaylistApp(library).run()
+    PlaylistApp().run()
 
+
+config = load_config()
 
 if __name__ == "__main__":
     main()
