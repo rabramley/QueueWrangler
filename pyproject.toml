@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "qwrangler"
+name = "qwangler"
 version = "0.1.0"
-description = "Manage musoc playlists"
+description = "Wrangle music queues (playlists)"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-qwrangler = "qwrangler.cli:main"
+qwrangler = "qwangler.cli:main"
 
 [dependency-groups]
 dev = [
