@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-qwrangler = "qwangler.cli:main"
+qwangler = "qwangler.cli:main"
 
 [dependency-groups]
 dev = [
